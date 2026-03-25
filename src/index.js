@@ -6,6 +6,55 @@ const twilio = require('twilio');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Canadian area code → province mapping
+const AREA_CODE_TO_PROVINCE = {
+  // Alberta
+  403: 'AB', 587: 'AB', 825: 'AB', 780: 'AB',
+  // British Columbia
+  236: 'BC', 250: 'BC', 604: 'BC', 672: 'BC', 778: 'BC',
+  // Manitoba
+  204: 'MB', 431: 'MB',
+  // New Brunswick
+  506: 'NB',
+  // Newfoundland & Labrador
+  709: 'NL',
+  // Nova Scotia / PEI (shared — default NS)
+  782: 'NS', 902: 'NS',
+  // Northwest Territories / Nunavut / Yukon (shared — default NT)
+  867: 'NT',
+  // Ontario
+  226: 'ON', 249: 'ON', 289: 'ON', 343: 'ON', 365: 'ON',
+  416: 'ON', 437: 'ON', 519: 'ON', 548: 'ON', 613: 'ON',
+  647: 'ON', 705: 'ON', 807: 'ON', 905: 'ON',
+  // Quebec
+  367: 'QC', 418: 'QC', 438: 'QC', 450: 'QC', 514: 'QC',
+  579: 'QC', 581: 'QC', 819: 'QC', 873: 'QC',
+  // Saskatchewan
+  306: 'SK', 474: 'SK', 639: 'SK',
+};
+
+// Provincial Twilio numbers (set in .env)
+const PROVINCE_NUMBERS = {
+  AB: process.env.TWILIO_NUMBER_AB,
+  BC: process.env.TWILIO_NUMBER_BC,
+  MB: process.env.TWILIO_NUMBER_MB,
+  NB: process.env.TWILIO_NUMBER_NB,
+  NL: process.env.TWILIO_NUMBER_NL,
+  NS: process.env.TWILIO_NUMBER_NS,
+  NT: process.env.TWILIO_NUMBER_NT,
+  ON: process.env.TWILIO_NUMBER_ON,
+  PE: process.env.TWILIO_NUMBER_PE,
+  QC: process.env.TWILIO_NUMBER_QC,
+  SK: process.env.TWILIO_NUMBER_SK,
+  YT: process.env.TWILIO_NUMBER_YT,
+};
+
+function getProvinceFromNumber(phoneNumber) {
+  const digits = phoneNumber.replace(/\D/g, '');
+  const areaCode = parseInt(digits.startsWith('1') ? digits.slice(1, 4) : digits.slice(0, 3));
+  return AREA_CODE_TO_PROVINCE[areaCode] || null;
+}
+
 const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
   .split(',')
   .map(o => o.trim());
@@ -53,15 +102,25 @@ app.post('/api/token', (req, res) => {
 
 // TwiML webhook for outbound calls
 app.post('/api/voice', (req, res) => {
+  const to = req.body.To;
+  const province = getProvinceFromNumber(to);
+  const callerId = (province && PROVINCE_NUMBERS[province]) || process.env.TWILIO_PHONE_NUMBER;
+
   const twiml = new twilio.twiml.VoiceResponse();
-  const dial = twiml.dial({
-    callerId: process.env.TWILIO_PHONE_NUMBER
-  });
-  
-  dial.number(req.body.To);
-  
+  const dial = twiml.dial({ callerId });
+  dial.number(to);
+
   res.type('text/xml');
   res.send(twiml.toString());
+});
+
+// Detect province and caller number for a given destination number
+app.get('/api/detect-province', (req, res) => {
+  const { number } = req.query;
+  if (!number) return res.json({ province: null, callerNumber: null });
+  const province = getProvinceFromNumber(number);
+  const callerNumber = (province && PROVINCE_NUMBERS[province]) || process.env.TWILIO_PHONE_NUMBER;
+  res.json({ province, callerNumber });
 });
 
 app.get('/', (req, res) => {
