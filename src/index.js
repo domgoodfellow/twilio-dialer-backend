@@ -2,33 +2,39 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const twilio = require('twilio');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
 // Canadian area code → province mapping
 const AREA_CODE_TO_PROVINCE = {
   // Alberta
-  403: 'AB', 587: 'AB', 825: 'AB', 780: 'AB',
+  403: 'AB', 587: 'AB', 780: 'AB', 825: 'AB', 368: 'AB',
   // British Columbia
   236: 'BC', 250: 'BC', 604: 'BC', 672: 'BC', 778: 'BC',
   // Manitoba
-  204: 'MB', 431: 'MB',
+  204: 'MB', 431: 'MB', 584: 'MB',
   // New Brunswick
-  506: 'NB',
+  506: 'NB', 428: 'NB',
   // Newfoundland & Labrador
   709: 'NL',
-  // Nova Scotia / PEI (shared — default NS)
+  // Nova Scotia / PEI (shared — default NS; 902 & 782 serve both provinces)
   782: 'NS', 902: 'NS',
   // Northwest Territories / Nunavut / Yukon (shared — default NT)
   867: 'NT',
   // Ontario
   226: 'ON', 249: 'ON', 289: 'ON', 343: 'ON', 365: 'ON',
   416: 'ON', 437: 'ON', 519: 'ON', 548: 'ON', 613: 'ON',
-  647: 'ON', 705: 'ON', 807: 'ON', 905: 'ON',
+  647: 'ON', 705: 'ON', 753: 'ON', 807: 'ON', 905: 'ON', 942: 'ON',
   // Quebec
-  367: 'QC', 418: 'QC', 438: 'QC', 450: 'QC', 514: 'QC',
-  579: 'QC', 581: 'QC', 819: 'QC', 873: 'QC',
+  263: 'QC', 354: 'QC', 367: 'QC', 418: 'QC', 438: 'QC', 450: 'QC',
+  514: 'QC', 579: 'QC', 581: 'QC', 819: 'QC', 873: 'QC',
   // Saskatchewan
   306: 'SK', 474: 'SK', 639: 'SK',
 };
@@ -101,17 +107,47 @@ app.post('/api/token', (req, res) => {
 });
 
 // TwiML webhook for outbound calls
-app.post('/api/voice', (req, res) => {
+app.post('/api/voice', async (req, res) => {
   const to = req.body.To;
+  const callSid = req.body.CallSid;
+  const userId = req.body.UserId || null;
   const province = getProvinceFromNumber(to);
   const callerId = (province && PROVINCE_NUMBERS[province]) || process.env.TWILIO_PHONE_NUMBER;
 
+  // Log the call attempt
+  if (callSid) {
+    await supabase.from('call_logs').insert({
+      user_id: userId,
+      to_number: to,
+      from_number: callerId,
+      province,
+      call_sid: callSid,
+      status: 'initiated',
+    });
+  }
+
   const twiml = new twilio.twiml.VoiceResponse();
-  const dial = twiml.dial({ callerId });
+  const dial = twiml.dial({ callerId, action: '/api/voice-status' });
   dial.number(to);
 
   res.type('text/xml');
   res.send(twiml.toString());
+});
+
+// Twilio status callback — updates the log when the call ends
+app.post('/api/voice-status', async (req, res) => {
+  const callSid = req.body.CallSid;
+  const status = req.body.DialCallStatus;
+  const duration = parseInt(req.body.DialCallDuration) || 0;
+
+  if (callSid) {
+    await supabase.from('call_logs')
+      .update({ status, duration_seconds: duration })
+      .eq('call_sid', callSid);
+  }
+
+  res.type('text/xml');
+  res.send(new twilio.twiml.VoiceResponse().toString());
 });
 
 // Detect province and caller number for a given destination number
